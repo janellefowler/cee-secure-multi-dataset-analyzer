@@ -79,6 +79,19 @@ class AuthenticationManager:
             )
         ''')
         
+        # Email whitelist table for admin-controlled access
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_whitelist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                role TEXT DEFAULT 'user',
+                added_by TEXT,
+                added_date TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                notes TEXT
+            )
+        ''')
+        
         # Access logs table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS access_logs (
@@ -160,7 +173,7 @@ class AuthenticationManager:
     
     def register_user(self, email: str, password: str, full_name: str, 
                      invitation_token: str = None) -> Tuple[bool, str]:
-        """Register a new user"""
+        """Register a new user with whitelist validation"""
         
         # Validate email
         if not self._validate_email(email):
@@ -181,8 +194,20 @@ class AuthenticationManager:
                 conn.close()
                 return False, "User already exists"
             
-            # If invitation token provided, validate it
-            role = "user"
+            # Check if email is whitelisted
+            cursor.execute('''
+                SELECT role, is_active FROM email_whitelist 
+                WHERE email = ? AND is_active = 1
+            ''', (email,))
+            
+            whitelist_entry = cursor.fetchone()
+            if not whitelist_entry:
+                conn.close()
+                return False, "Email not authorized. Contact administrator for access."
+            
+            role = whitelist_entry[0]
+            
+            # If invitation token provided, validate it (legacy support)
             if invitation_token:
                 cursor.execute('''
                     SELECT email, role, expires_date, is_used 
@@ -191,30 +216,16 @@ class AuthenticationManager:
                 ''', (invitation_token,))
                 
                 invitation = cursor.fetchone()
-                if not invitation:
-                    conn.close()
-                    return False, "Invalid invitation token"
-                
-                if invitation[3]:  # is_used
-                    conn.close()
-                    return False, "Invitation token already used"
-                
-                if datetime.fromisoformat(invitation[2]) < datetime.now():
-                    conn.close()
-                    return False, "Invitation token expired"
-                
-                if invitation[0] != email:
-                    conn.close()
-                    return False, "Email doesn't match invitation"
-                
-                role = invitation[1]
-                
-                # Mark invitation as used
-                cursor.execute('''
-                    UPDATE invitations 
-                    SET is_used = 1, used_date = ? 
-                    WHERE invitation_token = ?
-                ''', (datetime.now().isoformat(), invitation_token))
+                if invitation and not invitation[3] and datetime.fromisoformat(invitation[2]) > datetime.now():
+                    if invitation[0] == email:
+                        role = invitation[1]  # Use invitation role if valid
+                        
+                        # Mark invitation as used
+                        cursor.execute('''
+                            UPDATE invitations 
+                            SET is_used = 1, used_date = ? 
+                            WHERE invitation_token = ?
+                        ''', (datetime.now().isoformat(), invitation_token))
             
             # Create user
             salt = secrets.token_hex(32)
@@ -243,6 +254,75 @@ class AuthenticationManager:
             self.logger.error(f"Registration error: {str(e)}")
             return False, "Registration failed"
     
+    # Add whitelist management methods
+    def add_to_whitelist(self, email: str, role: str, added_by: str, notes: str = "") -> bool:
+        """Add email to whitelist (admin only)"""
+        
+        if not self._validate_email(email):
+            return False
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO email_whitelist 
+                (email, role, added_by, added_date, is_active, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                email,
+                role,
+                added_by,
+                datetime.now().isoformat(),
+                True,
+                notes
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            self._log_access(added_by, "whitelist_add", "", "", True, f"Added {email} to whitelist with role {role}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Whitelist add error: {str(e)}")
+            return False
+    
+    def list_whitelist(self, requester_role: str) -> List[Dict[str, Any]]:
+        """List all whitelisted emails (admin only)"""
+        
+        if requester_role != 'admin':
+            return []
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT email, role, added_by, added_date, is_active, notes
+                FROM email_whitelist 
+                ORDER BY added_date DESC
+            ''')
+            
+            whitelist = []
+            for row in cursor.fetchall():
+                whitelist.append({
+                    'email': row[0],
+                    'role': row[1],
+                    'added_by': row[2],
+                    'added_date': row[3],
+                    'is_active': bool(row[4]),
+                    'notes': row[5] or ""
+                })
+            
+            conn.close()
+            return whitelist
+            
+        except Exception as e:
+            self.logger.error(f"List whitelist error: {str(e)}")
+            return []
+    
+    # Keep all your existing methods (authenticate_user, create_session, etc.)
     def authenticate_user(self, email: str, password: str, ip_address: str = "", 
                          user_agent: str = "") -> Tuple[bool, str, Dict[str, Any]]:
         """Authenticate user login"""
@@ -435,167 +515,6 @@ class AuthenticationManager:
         except Exception as e:
             self.logger.error(f"Logout error: {str(e)}")
     
-    def create_invitation(self, email: str, role: str, invited_by: str, 
-                         expires_hours: int = 72) -> Tuple[bool, str]:
-        """Create an invitation for a new user"""
-        
-        if not self._validate_email(email):
-            return False, "Invalid email format"
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if user already exists
-            cursor.execute('SELECT email FROM users WHERE email = ?', (email,))
-            if cursor.fetchone():
-                conn.close()
-                return False, "User already exists"
-            
-            # Check for existing unused invitation
-            cursor.execute('''
-                SELECT invitation_token FROM invitations 
-                WHERE email = ? AND is_used = 0 AND expires_date > ?
-            ''', (email, datetime.now().isoformat()))
-            
-            existing = cursor.fetchone()
-            if existing:
-                conn.close()
-                return True, existing[0]  # Return existing token
-            
-            # Create new invitation
-            invitation_token = secrets.token_urlsafe(32)
-            expires_date = datetime.now() + timedelta(hours=expires_hours)
-            
-            cursor.execute('''
-                INSERT INTO invitations 
-                (email, invited_by, invitation_token, role, created_date, expires_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                email,
-                invited_by,
-                invitation_token,
-                role,
-                datetime.now().isoformat(),
-                expires_date.isoformat()
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            self._log_access(invited_by, "invite", "", "", True, f"Invited {email} with role {role}")
-            return True, invitation_token
-            
-        except Exception as e:
-            self.logger.error(f"Invitation creation error: {str(e)}")
-            return False, "Failed to create invitation"
-    
-    def send_invitation_email(self, email: str, invitation_token: str, invited_by: str) -> bool:
-        """Send invitation email (if SMTP configured)"""
-        
-        if not self.smtp_username or not self.smtp_password:
-            self.logger.warning("SMTP not configured - cannot send invitation email")
-            return False
-        
-        try:
-            # Create invitation URL
-            base_url = os.getenv('APP_BASE_URL', 'http://localhost:8507')
-            invitation_url = f"{base_url}?invitation={invitation_token}"
-            
-            # Create email
-            msg = MIMEMultipart()
-            msg['From'] = self.from_email
-            msg['To'] = email
-            msg['Subject'] = "Invitation to Multi-Dataset Analyzer"
-            
-            body = f"""
-            Hello,
-            
-            You have been invited by {invited_by} to join the Multi-Dataset Analyzer platform.
-            
-            Click the link below to accept the invitation and create your account:
-            {invitation_url}
-            
-            This invitation will expire in 72 hours.
-            
-            Best regards,
-            Multi-Dataset Analyzer Team
-            """
-            
-            msg.attach(MIMEText(body, 'plain'))
-            
-            # Send email
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            server.starttls()
-            server.login(self.smtp_username, self.smtp_password)
-            server.send_message(msg)
-            server.quit()
-            
-            self.logger.info(f"Invitation email sent to {email}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Email sending error: {str(e)}")
-            return False
-    
-    def _log_access(self, user_email: str, action: str, ip_address: str, 
-                   user_agent: str, success: bool, details: str = ""):
-        """Log access attempts and actions"""
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO access_logs 
-                (user_email, action, ip_address, user_agent, timestamp, success, details)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                user_email,
-                action,
-                ip_address,
-                user_agent,
-                datetime.now().isoformat(),
-                success,
-                details
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-        except Exception as e:
-            self.logger.error(f"Logging error: {str(e)}")
-    
-    def get_user_info(self, email: str) -> Optional[Dict[str, Any]]:
-        """Get user information"""
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT email, full_name, role, is_active, created_date, last_login
-                FROM users WHERE email = ?
-            ''', (email,))
-            
-            user_data = cursor.fetchone()
-            if user_data:
-                return {
-                    'email': user_data[0],
-                    'full_name': user_data[1],
-                    'role': user_data[2],
-                    'is_active': bool(user_data[3]),
-                    'created_date': user_data[4],
-                    'last_login': user_data[5]
-                }
-            
-            conn.close()
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Get user info error: {str(e)}")
-            return None
-    
     def list_users(self, requester_role: str) -> List[Dict[str, Any]]:
         """List all users (admin only)"""
         
@@ -629,50 +548,33 @@ class AuthenticationManager:
             self.logger.error(f"List users error: {str(e)}")
             return []
     
-    def update_user_role(self, email: str, new_role: str, updated_by: str) -> bool:
-        """Update user role (admin only)"""
+    def _log_access(self, user_email: str, action: str, ip_address: str, 
+                   user_agent: str, success: bool, details: str = ""):
+        """Log access attempts and actions"""
         
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute('UPDATE users SET role = ? WHERE email = ?', (new_role, email))
-            
-            if cursor.rowcount > 0:
-                conn.commit()
-                conn.close()
-                self._log_access(updated_by, "update_role", "", "", True, f"Changed {email} role to {new_role}")
-                return True
-            
-            conn.close()
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"Update role error: {str(e)}")
-            return False
-    
-    def deactivate_user(self, email: str, deactivated_by: str) -> bool:
-        """Deactivate user account (admin only)"""
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Deactivate user
-            cursor.execute('UPDATE users SET is_active = 0 WHERE email = ?', (email,))
-            
-            # Deactivate all sessions
-            cursor.execute('UPDATE user_sessions SET is_active = 0 WHERE user_email = ?', (email,))
+            cursor.execute('''
+                INSERT INTO access_logs 
+                (user_email, action, ip_address, user_agent, timestamp, success, details)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_email,
+                action,
+                ip_address,
+                user_agent,
+                datetime.now().isoformat(),
+                success,
+                details
+            ))
             
             conn.commit()
             conn.close()
             
-            self._log_access(deactivated_by, "deactivate_user", "", "", True, f"Deactivated user {email}")
-            return True
-            
         except Exception as e:
-            self.logger.error(f"Deactivate user error: {str(e)}")
-            return False
+            self.logger.error(f"Logging error: {str(e)}")
 
 def get_auth_manager() -> AuthenticationManager:
     """Get singleton authentication manager"""
@@ -760,79 +662,41 @@ def show_login_form(auth_manager: AuthenticationManager) -> Optional[Dict[str, A
             else:
                 st.error("Please enter both email and password")
     
-    
     return None
 
 def show_registration_form(auth_manager: AuthenticationManager, invitation_token: str = None) -> Optional[Dict[str, Any]]:
-    """Show registration form - Updated version"""
+    """Show registration form - Simplified version"""
     
-    try:
-        # Debug message
-        st.write("🔧 Registration form loading...")
-        
-        if invitation_token:
-            st.subheader("🎉 Complete Your Registration")
-            st.info("You've been invited to join the Multi-Dataset Analyzer!")
-        else:
-            st.subheader("Create New Account")
-            st.info("📝 Enter your details to request access. Your email must be authorized by an administrator.")
-        
-        with st.form("register_form"):
-            email = st.text_input("Email Address", placeholder="your.email@company.com")
-            full_name = st.text_input("Full Name", placeholder="John Doe")
-            password = st.text_input("Password", type="password", 
-                                    help="Must be at least 8 characters with uppercase, lowercase, and number")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            
-            # Only show invitation token field if not provided in URL
-            if not invitation_token:
-                invitation_input = st.text_input("Invitation Token (Optional)", 
-                                               placeholder="Leave blank if you don't have one",
-                                               help="Legacy invitation tokens are still supported")
+    # Simple debug message
+    st.write("🔧 Registration form is loading...")
+    
+    # Basic header
+    st.subheader("Create New Account")
+    st.info("Enter your details to create an account. Your email must be pre-authorized.")
+    
+    # Simple form without complex error handling
+    email = st.text_input("Email Address")
+    full_name = st.text_input("Full Name")
+    password = st.text_input("Password", type="password")
+    confirm_password = st.text_input("Confirm Password", type="password")
+    
+    if st.button("Create Account"):
+        if email and full_name and password and confirm_password:
+            if password == confirm_password:
+                try:
+                    success, message = auth_manager.register_user(email, password, full_name)
+                    if success:
+                        st.success("Account created! Please login.")
+                    else:
+                        st.error(message)
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
             else:
-                invitation_input = invitation_token
-                st.success(f"✅ Using invitation token: {invitation_token[:8]}...")
-            
-            register_button = st.form_submit_button("📝 Create Account", type="primary")
-            
-            if register_button:
-                if not all([email, full_name, password, confirm_password]):
-                    st.error("Please fill in all required fields")
-                elif password != confirm_password:
-                    st.error("Passwords do not match")
-                else:
-                    try:
-                        success, message = auth_manager.register_user(
-                            email, password, full_name, invitation_input if invitation_input else None
-                        )
-                        
-                        if success:
-                            st.success("✅ Account created successfully! Please login.")
-                            if invitation_token:
-                                st.session_state.invitation_mode = False
-                                st.rerun()
-                        else:
-                            st.error(f"❌ {message}")
-                            if "not authorized" in message.lower():
-                                st.info("💡 Contact your administrator to add your email to the authorized list.")
-                    except Exception as e:
-                        st.error(f"❌ Registration failed: {str(e)}")
-        
-        if not invitation_token:
-            st.markdown("""
-            ### 🔐 Access Control
-            
-            This system uses **admin-controlled access**:
-            - Your email must be pre-authorized by an administrator
-            - Contact your team administrator to request access
-            - Once authorized, you can create your account immediately
-            
-            **No invitation emails needed!** Just ask your admin to add your email to the system.
-            """)
-        
-        return None
-        
-    except Exception as e:
-        st.error(f"Error loading registration form: {str(e)}")
-        st.info("Please refresh the page or contact your administrator.")
-        return None
+                st.error("Passwords don't match")
+        else:
+            st.error("Please fill all fields")
+    
+    # Simple info section
+    st.markdown("**Note:** Your email must be authorized by an administrator.")
+    
+    return None
