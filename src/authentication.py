@@ -760,15 +760,6 @@ def show_login_form(auth_manager: AuthenticationManager) -> Optional[Dict[str, A
             else:
                 st.error("Please enter both email and password")
     
-    # Default admin info
-    with st.expander("ℹ️ Default Admin Access"):
-        st.info("""
-        **Default Admin Credentials:**
-        - Email: admin@dataanalyzer.com
-        - Password: admin123
-        
-        ⚠️ **Important**: Change the admin password immediately after first login!
-        """)
     
     return None
 
