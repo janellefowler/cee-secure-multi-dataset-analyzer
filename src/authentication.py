@@ -254,75 +254,6 @@ class AuthenticationManager:
             self.logger.error(f"Registration error: {str(e)}")
             return False, "Registration failed"
     
-    # Add whitelist management methods
-    def add_to_whitelist(self, email: str, role: str, added_by: str, notes: str = "") -> bool:
-        """Add email to whitelist (admin only)"""
-        
-        if not self._validate_email(email):
-            return False
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT OR REPLACE INTO email_whitelist 
-                (email, role, added_by, added_date, is_active, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                email,
-                role,
-                added_by,
-                datetime.now().isoformat(),
-                True,
-                notes
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            self._log_access(added_by, "whitelist_add", "", "", True, f"Added {email} to whitelist with role {role}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Whitelist add error: {str(e)}")
-            return False
-    
-    def list_whitelist(self, requester_role: str) -> List[Dict[str, Any]]:
-        """List all whitelisted emails (admin only)"""
-        
-        if requester_role != 'admin':
-            return []
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT email, role, added_by, added_date, is_active, notes
-                FROM email_whitelist 
-                ORDER BY added_date DESC
-            ''')
-            
-            whitelist = []
-            for row in cursor.fetchall():
-                whitelist.append({
-                    'email': row[0],
-                    'role': row[1],
-                    'added_by': row[2],
-                    'added_date': row[3],
-                    'is_active': bool(row[4]),
-                    'notes': row[5] or ""
-                })
-            
-            conn.close()
-            return whitelist
-            
-        except Exception as e:
-            self.logger.error(f"List whitelist error: {str(e)}")
-            return []
-    
-    # Keep all your existing methods (authenticate_user, create_session, etc.)
     def authenticate_user(self, email: str, password: str, ip_address: str = "", 
                          user_agent: str = "") -> Tuple[bool, str, Dict[str, Any]]:
         """Authenticate user login"""
@@ -546,6 +477,118 @@ class AuthenticationManager:
             
         except Exception as e:
             self.logger.error(f"List users error: {str(e)}")
+            return []
+    
+    def update_user_role(self, email: str, new_role: str, updated_by: str) -> bool:
+        """Update user role (admin only)"""
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('UPDATE users SET role = ? WHERE email = ?', (new_role, email))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                conn.close()
+                self._log_access(updated_by, "update_role", "", "", True, f"Changed {email} role to {new_role}")
+                return True
+            
+            conn.close()
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Update role error: {str(e)}")
+            return False
+    
+    def deactivate_user(self, email: str, deactivated_by: str) -> bool:
+        """Deactivate user account (admin only)"""
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Deactivate user
+            cursor.execute('UPDATE users SET is_active = 0 WHERE email = ?', (email,))
+            
+            # Deactivate all sessions
+            cursor.execute('UPDATE user_sessions SET is_active = 0 WHERE user_email = ?', (email,))
+            
+            conn.commit()
+            conn.close()
+            
+            self._log_access(deactivated_by, "deactivate_user", "", "", True, f"Deactivated user {email}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Deactivate user error: {str(e)}")
+            return False
+    
+    def add_to_whitelist(self, email: str, role: str, added_by: str, notes: str = "") -> bool:
+        """Add email to whitelist (admin only)"""
+        
+        if not self._validate_email(email):
+            return False
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO email_whitelist 
+                (email, role, added_by, added_date, is_active, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                email,
+                role,
+                added_by,
+                datetime.now().isoformat(),
+                True,
+                notes
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            self._log_access(added_by, "whitelist_add", "", "", True, f"Added {email} to whitelist with role {role}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Whitelist add error: {str(e)}")
+            return False
+    
+    def list_whitelist(self, requester_role: str) -> List[Dict[str, Any]]:
+        """List all whitelisted emails (admin only)"""
+        
+        if requester_role != 'admin':
+            return []
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT email, role, added_by, added_date, is_active, notes
+                FROM email_whitelist 
+                ORDER BY added_date DESC
+            ''')
+            
+            whitelist = []
+            for row in cursor.fetchall():
+                whitelist.append({
+                    'email': row[0],
+                    'role': row[1],
+                    'added_by': row[2],
+                    'added_date': row[3],
+                    'is_active': bool(row[4]),
+                    'notes': row[5] or ""
+                })
+            
+            conn.close()
+            return whitelist
+            
+        except Exception as e:
+            self.logger.error(f"List whitelist error: {str(e)}")
             return []
     
     def _log_access(self, user_email: str, action: str, ip_address: str, 
