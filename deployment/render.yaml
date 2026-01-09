@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: secure-multi-dataset-analyzer
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run secure_multi_dataset_app.py --server.port=$PORT --server.address=0.0.0.0
+    plan: free
+    envVars:
+      - key: APP_BASE_URL
+        value: https://your-app-name.onrender.com
+      - key: SMTP_SERVER
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+    disk:
+      name: data-storage
+      mountPath: /opt/render/project/src/data_storage
+      sizeGB: 1

@@ -1,0 +1,18 @@
+credentials:
+  usernames:
+    admin:
+      email: admin@company.com
+      name: Admin User
+      password: $2b$12$placeholder_hash_replace_this
+    user1:
+      email: user1@company.com
+      name: User One
+      password: $2b$12$placeholder_hash_replace_this
+    janellen@amazon.com:
+      email: janellen@amazon.com
+      name: Janelle Fowler
+      password: $2b$12$SS9fHdw6iUWCzkc449.QZOlgVXnj.Yy2hxvShPZ82W5D4RNujyxN6
+cookie:
+  expiry_days: 30
+  key: some_signature_key_change_this
+  name: some_cookie_name
