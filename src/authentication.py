@@ -764,52 +764,75 @@ def show_login_form(auth_manager: AuthenticationManager) -> Optional[Dict[str, A
     return None
 
 def show_registration_form(auth_manager: AuthenticationManager, invitation_token: str = None) -> Optional[Dict[str, Any]]:
-    """Show registration form"""
+    """Show registration form - Updated version"""
     
-    if invitation_token:
-        st.subheader("🎉 Complete Your Registration")
-        st.info("You've been invited to join the Multi-Dataset Analyzer!")
-    else:
-        st.subheader("Create New Account")
-        st.warning("⚠️ Registration requires an invitation token. Contact your administrator.")
-    
-    with st.form("register_form"):
-        email = st.text_input("Email Address", placeholder="your.email@company.com")
-        full_name = st.text_input("Full Name", placeholder="John Doe")
-        password = st.text_input("Password", type="password", 
-                                help="Must be at least 8 characters with uppercase, lowercase, and number")
-        confirm_password = st.text_input("Confirm Password", type="password")
+    try:
+        # Debug message
+        st.write("🔧 Registration form loading...")
+        
+        if invitation_token:
+            st.subheader("🎉 Complete Your Registration")
+            st.info("You've been invited to join the Multi-Dataset Analyzer!")
+        else:
+            st.subheader("Create New Account")
+            st.info("📝 Enter your details to request access. Your email must be authorized by an administrator.")
+        
+        with st.form("register_form"):
+            email = st.text_input("Email Address", placeholder="your.email@company.com")
+            full_name = st.text_input("Full Name", placeholder="John Doe")
+            password = st.text_input("Password", type="password", 
+                                    help="Must be at least 8 characters with uppercase, lowercase, and number")
+            confirm_password = st.text_input("Confirm Password", type="password")
+            
+            # Only show invitation token field if not provided in URL
+            if not invitation_token:
+                invitation_input = st.text_input("Invitation Token (Optional)", 
+                                               placeholder="Leave blank if you don't have one",
+                                               help="Legacy invitation tokens are still supported")
+            else:
+                invitation_input = invitation_token
+                st.success(f"✅ Using invitation token: {invitation_token[:8]}...")
+            
+            register_button = st.form_submit_button("📝 Create Account", type="primary")
+            
+            if register_button:
+                if not all([email, full_name, password, confirm_password]):
+                    st.error("Please fill in all required fields")
+                elif password != confirm_password:
+                    st.error("Passwords do not match")
+                else:
+                    try:
+                        success, message = auth_manager.register_user(
+                            email, password, full_name, invitation_input if invitation_input else None
+                        )
+                        
+                        if success:
+                            st.success("✅ Account created successfully! Please login.")
+                            if invitation_token:
+                                st.session_state.invitation_mode = False
+                                st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+                            if "not authorized" in message.lower():
+                                st.info("💡 Contact your administrator to add your email to the authorized list.")
+                    except Exception as e:
+                        st.error(f"❌ Registration failed: {str(e)}")
         
         if not invitation_token:
-            invitation_input = st.text_input("Invitation Token", 
-                                           placeholder="Enter invitation token from administrator")
-        else:
-            invitation_input = invitation_token
-            st.success(f"✅ Using invitation token: {invitation_token[:8]}...")
+            st.markdown("""
+            ### 🔐 Access Control
+            
+            This system uses **admin-controlled access**:
+            - Your email must be pre-authorized by an administrator
+            - Contact your team administrator to request access
+            - Once authorized, you can create your account immediately
+            
+            **No invitation emails needed!** Just ask your admin to add your email to the system.
+            """)
         
-        register_button = st.form_submit_button("📝 Create Account", type="primary")
+        return None
         
-        if register_button:
-            if not all([email, full_name, password, confirm_password]):
-                st.error("Please fill in all fields")
-            elif password != confirm_password:
-                st.error("Passwords do not match")
-            elif not invitation_input:
-                st.error("Invitation token is required")
-            else:
-                success, message = auth_manager.register_user(
-                    email, password, full_name, invitation_input
-                )
-                
-                if success:
-                    st.success("✅ Account created successfully! Please login.")
-                    if invitation_token:
-                        st.session_state.invitation_mode = False
-                        st.rerun()
-                else:
-                    st.error(f"❌ {message}")
-    
-    if not invitation_token:
-        st.info("💡 Need an invitation? Contact your system administrator to get access.")
-    
-    return None
+    except Exception as e:
+        st.error(f"Error loading registration form: {str(e)}")
+        st.info("Please refresh the page or contact your administrator.")
+        return None
