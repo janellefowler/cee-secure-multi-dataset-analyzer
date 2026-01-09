@@ -752,7 +752,7 @@ def show_admin_panel():
     
     auth_manager = get_auth_manager()
     
-    tab1, tab2, tab3 = st.tabs(["👥 Users", "📧 Invitations", "📊 System Stats"])
+    tab1, tab2, tab3, tab4 = st.tabs(["👥 Users", "📋 Email Whitelist", "📧 Legacy Invitations", "📊 System Stats"])
     
     with tab1:
         st.subheader("User Management")
@@ -791,43 +791,92 @@ def show_admin_panel():
                                 st.rerun()
     
     with tab2:
-        st.subheader("Send Invitations")
+        st.subheader("📋 Email Whitelist Management")
+        st.markdown("*Control who can register for the system*")
         
-        with st.form("invitation_form"):
-            email = st.text_input("Email Address")
-            role = st.selectbox("Role", ['user', 'admin'])
+        # Add new email to whitelist
+        with st.form("whitelist_form"):
+            st.markdown("**Add Email to Whitelist**")
+            col1, col2 = st.columns([2, 1])
             
-            if st.form_submit_button("📧 Send Invitation"):
+            with col1:
+                email = st.text_input("Email Address", placeholder="user@company.com")
+                notes = st.text_input("Notes (Optional)", placeholder="Team member, contractor, etc.")
+            
+            with col2:
+                role = st.selectbox("Role", ['user', 'admin'])
+            
+            if st.form_submit_button("✅ Add to Whitelist", type="primary"):
                 if email:
-                    success, token = auth_manager.create_invitation(
-                        email, role, st.session_state.user_info['email']
-                    )
-                    
-                    if success:
-                        st.success(f"✅ Invitation created for {email}")
-                        
-                        # Show invitation URL
-                        base_url = "http://localhost:8507"  # Update with your actual URL
-                        invitation_url = f"{base_url}?invitation={token}"
-                        
-                        st.code(invitation_url, language=None)
-                        st.info("📋 Copy this URL and send it to the user")
-                        
-                        # Try to send email if configured
-                        if auth_manager.send_invitation_email(email, token, st.session_state.user_info['full_name']):
-                            st.success("📧 Invitation email sent!")
-                        else:
-                            st.warning("⚠️ Email not configured - share the URL manually")
+                    if auth_manager.add_to_whitelist(email, role, st.session_state.user_info['email'], notes):
+                        st.success(f"✅ Added {email} to whitelist")
+                        st.rerun()
                     else:
-                        st.error(f"❌ {token}")
+                        st.error("Failed to add email to whitelist")
+                else:
+                    st.error("Please enter an email address")
+        
+        st.divider()
+        
+        # List current whitelist
+        st.markdown("**Current Whitelist**")
+        whitelist = auth_manager.list_whitelist('admin')
+        
+        if whitelist:
+            for entry in whitelist:
+                status_color = "🟢" if entry['is_active'] else "🔴"
+                
+                with st.expander(f"{status_color} {entry['email']} ({entry['role']})"):
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.write(f"**Role:** {entry['role']}")
+                        st.write(f"**Added by:** {entry['added_by']}")
+                        st.write(f"**Added:** {datetime.fromisoformat(entry['added_date']).strftime('%Y-%m-%d %H:%M')}")
+                        if entry['notes']:
+                            st.write(f"**Notes:** {entry['notes']}")
+                        st.write(f"**Status:** {'Active' if entry['is_active'] else 'Inactive'}")
+                    
+                    with col2:
+                        st.info("Whitelist management features coming soon!")
+        else:
+            st.info("No emails in whitelist. Add emails above to allow registration.")
+        
+        # Bulk import section
+        st.divider()
+        st.markdown("**Bulk Import**")
+        
+        with st.expander("📤 Import Multiple Emails"):
+            st.markdown("Enter one email per line:")
+            bulk_emails = st.text_area("Email List", placeholder="user1@company.com\nuser2@company.com\nuser3@company.com")
+            bulk_role = st.selectbox("Role for all", ['user', 'admin'], key="bulk_role")
+            bulk_notes = st.text_input("Notes for all", placeholder="Bulk import batch 1")
+            
+            if st.button("📥 Import All"):
+                if bulk_emails:
+                    emails = [email.strip() for email in bulk_emails.split('\n') if email.strip()]
+                    success_count = 0
+                    
+                    for email in emails:
+                        if auth_manager.add_to_whitelist(email, bulk_role, st.session_state.user_info['email'], bulk_notes):
+                            success_count += 1
+                    
+                    st.success(f"✅ Successfully imported {success_count} out of {len(emails)} emails")
+                    if success_count > 0:
+                        st.rerun()
     
     with tab3:
+        st.subheader("📧 Legacy Invitation System")
+        st.info("⚠️ The invitation system is now legacy. Use the Email Whitelist instead for better control.")
+        
+        st.markdown("The old invitation system is still available but not recommended. Use the Email Whitelist tab instead.")
+    
+    with tab4:
         st.subheader("System Statistics")
         
         # Get basic stats
         users = auth_manager.list_users('admin')
-        dataset_manager = DatasetManager()
-        all_datasets = dataset_manager.storage.list_datasets('')  # Get all datasets
+        whitelist = auth_manager.list_whitelist('admin')
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -837,10 +886,7 @@ def show_admin_panel():
             active_users = sum(1 for u in users if u['is_active'])
             st.metric("Active Users", active_users)
         with col3:
-            st.metric("Total Datasets", len(all_datasets))
+            st.metric("Whitelisted Emails", len([w for w in whitelist if w['is_active']]))
         with col4:
-            total_size = sum(d['file_size_mb'] for d in all_datasets)
-            st.metric("Total Data Size", f"{total_size:.1f} MB")
-
-if __name__ == "__main__":
-    main()
+            admin_users = sum(1 for u in users if u['role'] == 'admin')
+            st.metric("Admin Users", admin_users)
